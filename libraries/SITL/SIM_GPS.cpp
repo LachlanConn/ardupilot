@@ -183,6 +183,14 @@ const AP_Param::GroupInfo SIM::GPSParms::var_info[] = {
     // @User: Advanced
     AP_GROUPINFO("UBXMDL",    22, GPSParms, ubx_model, 0),
 
+    // @Param: LATE_MS
+    // @DisplayName: GPS late delivery
+    // @Description: Additional time in milliseconds that GPS data takes to reach the autopilot, without changing the time of the GPS solution. This simulates transport delays such as a busy CAN bus.
+    // @Units: ms
+    // @Range: 0 1000
+    // @User: Advanced
+    AP_GROUPINFO("LATE_MS",   23, GPSParms, late_ms, 0),
+
     AP_GROUPEND
 };
 }
@@ -246,6 +254,42 @@ ssize_t GPS::write_to_autopilot(const char *p, size_t size) const
         return -1;
     }
 
+    const int16_t late_ms = _sitl->gps[instance].late_ms;
+    if (late_ms > 0 || !late_chunks.is_empty()) {
+        // hold the data back, keeping it in order with any data already held back
+        const LateChunk chunk { AP_HAL::millis() + MAX(late_ms, 0), uint16_t(size) };
+        if (size > UINT16_MAX || late_bytes.space() < size || !late_chunks.push(chunk)) {
+            return 0;
+        }
+        late_bytes.write((const uint8_t *)p, size);
+        return size;
+    }
+
+    return write_now(p, size);
+}
+
+/*
+  send any data held back by SIM_GPSn_LATE_MS that is now due
+ */
+void GPS::send_late_data()
+{
+    const uint32_t now_ms = AP_HAL::millis();
+    LateChunk chunk;
+    while (late_chunks.peek(chunk) && int32_t(now_ms - chunk.release_ms) >= 0) {
+        uint8_t buf[256];
+        uint16_t remaining = chunk.len;
+        while (remaining > 0) {
+            const uint16_t n = MIN(remaining, sizeof(buf));
+            late_bytes.read(buf, n);
+            write_now((const char *)buf, n);
+            remaining -= n;
+        }
+        late_chunks.pop();
+    }
+}
+
+ssize_t GPS::write_now(const char *p, size_t size) const
+{
     const float byteloss = _sitl->gps[instance].byteloss;
 
     // shortcut if we're not doing byteloss:
@@ -467,6 +511,8 @@ void GPS::update()
     if (!init_sitl_pointer()) {
         return;
     }
+
+    send_late_data();
 
     check_backend_allocation();
     if (backend == nullptr) {

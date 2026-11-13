@@ -181,6 +181,16 @@ private:
     uint8_t allocated_type;
     GPS_Backend *backend;
     void check_backend_allocation();
+
+    // data held back to simulate late delivery to the autopilot
+    struct LateChunk {
+        uint32_t release_ms;
+        uint16_t len;
+    };
+    mutable ObjectBuffer<LateChunk> late_chunks{64};
+    mutable ByteBuffer late_bytes{16384};
+    void send_late_data();
+    ssize_t write_now(const char *p, size_t size) const;
 };
 
 }

@@ -373,6 +373,7 @@ public:
         AP_Float noise_horizontal; // horizontal noise radius in meters
         AP_Vector3f vel_glitch; // glitch offsets in NED velocity (m/s)
         AP_Int8 ubx_model; // see enum SITL::GPS_UBlox::Model
+        AP_Int16 late_ms; // additional delay in delivering GPS data to the autopilot (ms)
     };
     GPSParms gps[AP_SIM_MAX_GPS_SENSORS];
 
