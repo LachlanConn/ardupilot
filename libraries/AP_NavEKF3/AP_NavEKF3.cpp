@@ -777,6 +777,16 @@ const AP_Param::GroupInfo NavEKF3::var_info2[] = {
     // @User: Advanced
     AP_GROUPINFO("OPTIONS",  11, NavEKF3, _options, 0),
 
+    // @Param: GPS_DLY_MAX
+    // @DisplayName: GPS maximum delay
+    // @Description: The largest age in msec of GPS data when it reaches the EKF, from when the measurement was valid. The EKF buffers are sized to hold GPS data of at least this age. GPSn_DELAY_MS sets the delay compensated for in the GPS timestamp, but over some connections, eg DroneCAN, the data can take noticeably longer than that to reach the EKF. Set to zero to size the buffers from the GPS delay only.
+    // @Range: 0 250
+    // @Increment: 10
+    // @Units: ms
+    // @User: Advanced
+    // @RebootRequired: True
+    AP_GROUPINFO("GPS_DLY_MAX", 12, NavEKF3, _gpsDelayMax_ms, 0),
+
     AP_GROUPEND
 };
 
