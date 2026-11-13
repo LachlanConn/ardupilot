@@ -4615,6 +4615,103 @@ return update()
 
         self.disarm_vehicle(force=True)
 
+    def EK3GPSLateData(self):
+        '''check GPS data reaching the EKF later than its delay is fused at the right time'''
+        # The simulated GPS data lags by SIM_GPSn_LAG_MS (100ms) and
+        # GPSn_DELAY_MS is set to match, but the data takes a further
+        # ~50ms to reach the EKF.  Unless EK3_GPS_DLY_MAX allows for
+        # that the EKF buffers are sized from the GPS delay, so every
+        # GPS sample is clamped to the oldest buffer time and fused
+        # late, and a short period of late GPS1 data causes a lane
+        # switch even though the GPS data itself is correct
+        control = self.fly_late_gps_data(0)
+        fixed = self.fly_late_gps_data(250)
+        self.reboot_sitl()
+
+        for name, r in ("control", control), ("fixed", fixed):
+            self.progress("%s: lane switches %s" % (name, str(r["lane_switches"])))
+            for phase in "on_time", "late":
+                self.progress("%s %s: vel ratio mean %.3f max %.3f pos ratio mean %.3f max %.3f" % (
+                    (name, phase) + r[phase]))
+
+        if "late" not in [x[0] for x in control["lane_switches"]]:
+            raise NotAchievedException("Expected late GPS data to cause a lane switch without EK3_GPS_DLY_MAX")
+        if len(fixed["lane_switches"]) != 0:
+            raise NotAchievedException("Unexpected lane switch with EK3_GPS_DLY_MAX set: %s" % str(fixed["lane_switches"]))
+        if fixed["on_time"][2] * 5 > control["on_time"][2]:
+            raise NotAchievedException("Expected EK3_GPS_DLY_MAX to reduce the GPS position innovations")
+        if fixed["late"][3] > 0.05:
+            raise NotAchievedException("Late GPS data affected the GPS position innovations with EK3_GPS_DLY_MAX set")
+
+    def fly_late_gps_data(self, dly_max):
+        '''fly a circle with a period of late GPS1 data, returning the lane
+        switches and the EKF velocity and position test ratios'''
+        self.context_push()
+        params = {
+            "SCHED_LOOP_RATE": 200,
+            "EK3_IMU_MASK": 3,
+            "EK3_AFFINITY": 1,  # lane 0 uses GPS1, lane 1 uses GPS2
+            "GPS2_TYPE": 1,
+            "SIM_GPS2_ENABLE": 1,
+            # compensate for the simulated GPS measurement delay
+            "GPS1_DELAY_MS": 100,
+            "GPS2_DELAY_MS": 100,
+            # GPS accuracy and noise as for an RTK receiver, so that fusion timing errors show in the innovations
+            "SIM_GPS1_ACC": 0.1,
+            "SIM_GPS2_ACC": 0.1,
+            "EK3_VELNE_M_NSE": 0.1,
+            "EK3_POSNE_M_NSE": 0.1,
+        }
+        if dly_max != 0:
+            params["EK3_GPS_DLY_MAX"] = dly_max
+        self.set_parameters(params)
+        self.reboot_sitl()
+
+        lane_switches = []
+        stats = {}
+        phase = [None]
+
+        def hook(mav, m):
+            t = m.get_type()
+            if t == 'STATUSTEXT' and m.text.startswith("EKF3 lane switch"):
+                lane_switches.append((phase[0], m.text))
+            if t == 'EKF_STATUS_REPORT' and phase[0] is not None:
+                stats.setdefault(phase[0], []).append((m.velocity_variance, m.pos_horiz_variance))
+        self.install_message_hook_context(hook)
+
+        self.takeoff(alt=100)
+        self.change_mode('CIRCLE')
+        self.delay_sim_time(10, "settle in circle")
+        phase[0] = "on_time"
+        self.delay_sim_time(20, "circle with GPS data on time")
+        # ramp the extra delay up and down slowly so that the GPS driver
+        # does not see a gap of more than 1.5 GPS periods between
+        # messages, and keep the event short enough for the GPS driver's
+        # jitter correction not to absorb it
+        phase[0] = "late"
+        late_ms = 80
+        for ms in list(range(20, late_ms+1, 20)) + list(range(late_ms-20, -1, -20)):
+            self.set_parameter("SIM_GPS1_LATE_MS", ms)
+            self.delay_sim_time(5 if ms == late_ms else 0.5, "GPS1 data %ums late" % ms)
+        phase[0] = "after"
+        self.delay_sim_time(10, "GPS1 data back on time")
+        phase[0] = None
+
+        self.fly_home_land_and_disarm()
+        self.set_rc(3, 1000)
+        self.clear_mission(mavutil.mavlink.MAV_MISSION_TYPE_MISSION)
+        self.context_pop()
+
+        ret = {"lane_switches": lane_switches}
+        for name, s in stats.items():
+            ret[name] = (
+                sum(x[0] for x in s) / len(s),
+                max(x[0] for x in s),
+                sum(x[1] for x in s) / len(s),
+                max(x[1] for x in s),
+            )
+        return ret
+
     def _EKF3AirspeedAffinity(self, force_dcm=False):
         '''shared body for EKF3AirspeedAffinity and
         EKF3AirspeedAffinityDCM; see those for what is asserted'''
@@ -11010,6 +11107,7 @@ return update()
             self.KebniSensAItionExternalINS,
             self.AeronEAHRS,
             self.EKFlaneswitch,
+            self.EK3GPSLateData,
             self.ClimbBeforeTurn,
             self.AltOffsetReset,
             self.MAV_CMD_DO_AUX_FUNCTION,
